@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -13,9 +14,13 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-type config struct {
-	BucketName string `json: "bucket_name"`
-	Region     string `json: "region"`
+type ListFiles struct {
+	FileNames []string `json:"file_names"`
+}
+
+type Config struct {
+	BucketName string `json:"bucket_name"`
+	Region     string `json:"region"`
 }
 
 func exitErrorf(msg string, args ...interface{}) {
@@ -23,17 +28,18 @@ func exitErrorf(msg string, args ...interface{}) {
 	os.Exit(1)
 }
 
-func listObjects() string {
+func listObjects(cfg Config) (error, ListFiles) {
+	var lf ListFiles
 	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String("eu-central-1")},
+		Region: aws.String(cfg.Region)},
 	)
 	if err != nil {
-		return ""
+		return err, lf
 	}
 	// Create S3 service client
 	svc := s3.New(sess)
 	input := &s3.ListObjectsInput{
-		Bucket:  aws.String("vas-bucket-1"),
+		Bucket:  aws.String(cfg.BucketName),
 		MaxKeys: aws.Int64(2),
 	}
 
@@ -51,16 +57,37 @@ func listObjects() string {
 			// Message from an error.
 			fmt.Println(err.Error())
 		}
-		return ""
+		return err, lf
 	}
-	return fmt.Sprintf("%s", result)
+	for _, obj := range result.Contents {
+		lf.FileNames = append(lf.FileNames, *obj.Key)
+	}
+	return nil, lf
 }
 
 func main() {
 	// Hello world, the web server
-
+	var cfg Config
+	configFile, err := os.Open("config.json")
+	if err != nil {
+		exitErrorf("opening config file", err.Error())
+	}
+	jsonParser := json.NewDecoder(configFile)
+	if err = jsonParser.Decode(&cfg); err != nil {
+		exitErrorf("parsing config file", err.Error())
+	}
 	helloHandler := func(w http.ResponseWriter, req *http.Request) {
-		io.WriteString(w, listObjects())
+		err, lf := listObjects(cfg)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		res, err := json.Marshal(lf)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		io.WriteString(w, string(res))
 	}
 
 	http.HandleFunc("/hello", helloHandler)
