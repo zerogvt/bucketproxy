@@ -68,7 +68,19 @@ func listObjects(cfg Config) (error, s3.ListObjectsOutput) {
 	return nil, *result
 }
 
+func ReadUserIP(r *http.Request) string {
+	IPAddress := r.Header.Get("X-Real-Ip")
+	if IPAddress == "" {
+		IPAddress = r.Header.Get("X-Forwarded-For")
+	}
+	if IPAddress == "" {
+		IPAddress = r.RemoteAddr
+	}
+	return IPAddress
+}
+
 func ListHandler(w http.ResponseWriter, req *http.Request) {
+	log.Println("Listing request. Client: " + ReadUserIP(req))
 	err, lf := listObjects(cfg)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -79,7 +91,7 @@ func ListHandler(w http.ResponseWriter, req *http.Request) {
 
 func GetFileHandler(w http.ResponseWriter, req *http.Request) {
 	target := req.URL.Path[1:]
-	fmt.Println("Serving: " + target)
+	log.Println("Serving: " + target + " Client: " + ReadUserIP(req))
 	if _, err := os.Stat(target); err != nil {
 		// file not locally - download from S3
 		erraws := DownloadFromS3(target)
@@ -112,10 +124,10 @@ func DownloadFromS3(fpath string) error {
 			Key:    aws.String(awsKey),
 		})
 	if err != nil {
-		exitErrorf("Unable to download item %q, %v", awsKey, err)
+		log.Println("Unable to download item: ", awsKey, err)
 		return err
 	}
-	fmt.Println("Downloaded", file.Name(), numBytes, "bytes")
+	log.Println("Downloaded", file.Name(), numBytes, "bytes")
 	return nil
 }
 
@@ -136,6 +148,6 @@ func main() {
 	http.HandleFunc("/list", ListHandler)
 	http.HandleFunc("/"+FILES_FOLDER+"/", GetFileHandler)
 
-	log.Println("Listing for requests at http://localhost:" + cfg.ServerPort)
+	log.Println("Listening at http://localhost:" + cfg.ServerPort)
 	log.Fatal(http.ListenAndServe(":"+cfg.ServerPort, nil))
 }
