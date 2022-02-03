@@ -1,5 +1,6 @@
 {
-"bucket_name":"vas-bucket-1",
-"region": "eu-central-1"
+    "bucket_name":"vas-bucket-1",
+    "region": "eu-central-1",
+    "server_port": "8080"
 }
 

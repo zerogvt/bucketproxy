@@ -7,12 +7,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 )
+
+var cfg Config
+
+const FILES_FOLDER = "download"
 
 type ListFiles struct {
 	FileNames []string `json:"file_names"`
@@ -21,6 +27,7 @@ type ListFiles struct {
 type Config struct {
 	BucketName string `json:"bucket_name"`
 	Region     string `json:"region"`
+	ServerPort string `json:"server_port"`
 }
 
 func exitErrorf(msg string, args ...interface{}) {
@@ -28,13 +35,12 @@ func exitErrorf(msg string, args ...interface{}) {
 	os.Exit(1)
 }
 
-func listObjects(cfg Config) (error, ListFiles) {
-	var lf ListFiles
+func listObjects(cfg Config) (error, s3.ListObjectsOutput) {
 	sess, err := session.NewSession(&aws.Config{
 		Region: aws.String(cfg.Region)},
 	)
 	if err != nil {
-		return err, lf
+		return err, s3.ListObjectsOutput{}
 	}
 	// Create S3 service client
 	svc := s3.New(sess)
@@ -57,17 +63,67 @@ func listObjects(cfg Config) (error, ListFiles) {
 			// Message from an error.
 			fmt.Println(err.Error())
 		}
-		return err, lf
+		return err, s3.ListObjectsOutput{}
 	}
-	for _, obj := range result.Contents {
-		lf.FileNames = append(lf.FileNames, *obj.Key)
+	return nil, *result
+}
+
+func ListHandler(w http.ResponseWriter, req *http.Request) {
+	err, lf := listObjects(cfg)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
-	return nil, lf
+	io.WriteString(w, fmt.Sprintf("%s", lf))
+}
+
+func GetFileHandler(w http.ResponseWriter, req *http.Request) {
+	target := req.URL.Path[1:]
+	fmt.Println("Serving: " + target)
+	if _, err := os.Stat(target); err != nil {
+		// file not locally - download from S3
+		erraws := DownloadFromS3(target)
+		if erraws != nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+	}
+	http.ServeFile(w, req, target)
+}
+
+func DownloadFromS3(fpath string) error {
+	file, err := os.Create(fpath)
+	if err != nil {
+		exitErrorf("Unable to open file %q, %v", fpath, err)
+	}
+	defer file.Close()
+	// Initialize a session in us-west-2 that the SDK will use to load
+	// credentials from the shared credentials file ~/.aws/credentials.
+	sess, _ := session.NewSession(&aws.Config{
+		Region: aws.String(cfg.Region)},
+	)
+
+	downloader := s3manager.NewDownloader(sess)
+	temp := strings.Split(fpath, "/")
+	awsKey := temp[len(temp)-1]
+	numBytes, err := downloader.Download(file,
+		&s3.GetObjectInput{
+			Bucket: aws.String(cfg.BucketName),
+			Key:    aws.String(awsKey),
+		})
+	if err != nil {
+		exitErrorf("Unable to download item %q, %v", awsKey, err)
+		return err
+	}
+	fmt.Println("Downloaded", file.Name(), numBytes, "bytes")
+	return nil
 }
 
 func main() {
-	// Hello world, the web server
-	var cfg Config
+	err := os.MkdirAll(FILES_FOLDER, 0700)
+	if err != nil {
+		log.Fatal(err)
+	}
 	configFile, err := os.Open("config.json")
 	if err != nil {
 		exitErrorf("opening config file", err.Error())
@@ -76,21 +132,10 @@ func main() {
 	if err = jsonParser.Decode(&cfg); err != nil {
 		exitErrorf("parsing config file", err.Error())
 	}
-	helloHandler := func(w http.ResponseWriter, req *http.Request) {
-		err, lf := listObjects(cfg)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		res, err := json.Marshal(lf)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		io.WriteString(w, string(res))
-	}
 
-	http.HandleFunc("/hello", helloHandler)
-	log.Println("Listing for requests at http://localhost:8080/hello")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	http.HandleFunc("/list", ListHandler)
+	http.HandleFunc("/"+FILES_FOLDER+"/", GetFileHandler)
+
+	log.Println("Listing for requests at http://localhost:" + cfg.ServerPort)
+	log.Fatal(http.ListenAndServe(":"+cfg.ServerPort, nil))
 }
