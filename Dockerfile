@@ -12,6 +12,4 @@ RUN go mod download
 
 RUN go build -o bucketproxy ./server/
 
-EXPOSE 8080
-
 CMD [ "./bucketproxy" ]
